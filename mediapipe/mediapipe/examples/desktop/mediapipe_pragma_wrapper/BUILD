@@ -1,26 +1,12 @@
-licenses(["notice"])
+load("//mediapipe/examples/desktop/mediapipe_pragma_wrapper:windows_dll_library.bzl", "windows_dll_library")
 
 package(default_visibility = ["//mediapipe/examples:__subpackages__"])
 
-cc_shared_library(
+cc_binary(
     name = "mediapipe_pragma_wrapper",
-    user_link_flags = [
-        "-Wl",
-    ],
-    deps = [
-        "mediapipe_pragma_wrapper_static",
-    ],
-)
-
-cc_library(
-    name = "mediapipe_pragma_wrapper_static",
     srcs = ["hello_world.cc","face_landmarker_graph.cc"],
     data = [
-        "//mediapipe/modules/face_landmark:face_landmark.tflite",
-        "//mediapipe/modules/hand_landmark:hand_landmark_full.tflite",
-        "//mediapipe/modules/holistic_landmark:hand_recrop.tflite",
-        "//mediapipe/modules/pose_detection:pose_detection.tflite",
-        "//mediapipe/modules/pose_landmark:pose_landmark_full.tflite",
+        "//mediapipe/tasks/testdata/vision:test_models"
     ],
     deps = [
         "//mediapipe/examples/desktop:demo_run_graph_main",
@@ -32,5 +18,8 @@ cc_library(
 		"//mediapipe/tasks/cc/core:base_options",
 		"//mediapipe/tasks/cc/vision/face_landmarker:face_landmarker_graph",
 		"//mediapipe/tasks/cc/vision/face_geometry:face_geometry_from_landmarks_graph",
+		"//mediapipe/tasks/cc/vision/utils:image_utils",
     ],
+    linkshared = 1,
+    copts = ["/DCOMPILING_DLL"],
 )
