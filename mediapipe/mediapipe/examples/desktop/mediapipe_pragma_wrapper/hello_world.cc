@@ -141,23 +141,23 @@ namespace mediapipe::tasks::ios::test::vision::utils {
 
 }  // namespace mediapipe::tasks::ios::test::vision::utils
 
-mediapipe::NormalizedLandmarkList GetLandmarks(absl::string_view filename) {
+mediapipe::NormalizedLandmarkList GetLandmarks(const std::string &rootDir,absl::string_view filename) {
 	// ::file::GetTextProto appears to be from some internal Google library that wasn't made open-source, so we can't use it.
 	//CHECK_OK(::file::GetTextProto(mediapipe::file::JoinPath("./", kTestDataDirectory, filename),
 	//	&landmarks, ::file::Defaults()))
 	
 	// Fortunately someone re-created it: https://github.com/google/mediapipe/pull/4455#discussion_r1204387674
 	mediapipe::NormalizedLandmarkList landmarks;
-	auto res = mediapipe::tasks::ios::test::vision::utils::get_proto_from_pbtxt(mediapipe::file::JoinPath("./", kTestDataDirectory, filename),landmarks);
+	auto res = mediapipe::tasks::ios::test::vision::utils::get_proto_from_pbtxt(mediapipe::file::JoinPath(rootDir, kTestDataDirectory, filename),landmarks);
 	std::cout << "Res: " << res.ok() << std::endl;
 
 		return landmarks;
 }
 
 
-static void face()
+static void face(const std::string& rootDir)
 {
-	auto in_landmarks = GetLandmarks(kInLandmarks);
+	auto in_landmarks = GetLandmarks(rootDir,kInLandmarks);
 	std::pair<int, int> in_image_size = { 820, 1024 };
 	auto task_runner = create_face_runner_task("", true, false);
 	if (!task_runner.ok())
@@ -171,7 +171,7 @@ static void face()
 	const auto& actual_blendshapes =
 		(*output_packets)[kBlendshapesName].Get<mediapipe::ClassificationList>();
 	std::cout << "Blendshapes:" << std::endl;
-	//std::cout << actual_blendshapes.Utf8DebugString() << std::endl;
+	std::cout << actual_blendshapes.Utf8DebugString() << std::endl;
 }
 /*
 static auto create_face_landmark_runner_task(std::string model_name, bool output_blendshape, bool output_face_geometry) {
@@ -579,6 +579,8 @@ constexpr char kNormRectName[] = "norm_rect";
 constexpr char kNormLandmarksName[] = "norm_landmarks";
 constexpr char kFaceGeometryName[] = "face_geometry";
 constexpr char kFaceLandmarkerModelBundleName[] = "face_landmarker_v2.task";
+constexpr char kFaceLandmarkerWithBlendshapesModelBundleName[] =
+"face_landmarker_v2_with_blendshapes.task";
 static absl::lts_20230125::StatusOr<std::unique_ptr<mediapipe::tasks::core::TaskRunner,std::default_delete<mediapipe::tasks::core::TaskRunner>>> create_face_landmarker_runner_task(std::string model_name, bool output_blendshape, bool output_face_geometry) {
 	//::mediapipe::api2::builder::Graph graph;
 	//auto& face_blendshapes_graph = graph.AddNode(
@@ -599,8 +601,10 @@ static absl::lts_20230125::StatusOr<std::unique_ptr<mediapipe::tasks::core::Task
 	::mediapipe::api2::builder::Graph graph;
 
 	auto& face_landmarker = graph.AddNode(
-		"mediapipe.tasks.vision.face_landmarker."
-		"FaceLandmarkerGraph");
+		"mediapipe.tasks.vision.face_landmarker.FaceLandmarkerGraph");
+
+	// TODO: This overwrites the global kTestDataDirectory. For some reason with this path "mediapipe/" is added as prefix already.
+	std::string kTestDataDirectory = "/tasks/testdata/vision/";
 
 	auto* options = &face_landmarker.GetOptions<mediapipe::tasks::vision::face_landmarker::proto::FaceLandmarkerGraphOptions>();
 	options->mutable_base_options()->mutable_model_asset()->set_file_name(
@@ -608,12 +612,17 @@ static absl::lts_20230125::StatusOr<std::unique_ptr<mediapipe::tasks::core::Task
 	options->mutable_face_detector_graph_options()->set_num_faces(1);
 	options->mutable_base_options()->set_use_stream_mode(true);
 
+	//options->mutable_face_landmarks_detector_graph_options()->mutable_face_blendshapes_graph_options()->mutable_model_asset()->set_file_name(
+	//	mediapipe::file::JoinPath("./", kTestDataDirectory, "face_blendshapes.tflite"));
+
 	graph[::mediapipe::api2::Input<mediapipe::Image>(kImageTag)].SetName(kImageName) >>
 		face_landmarker.In(kImageTag);
-	graph[::mediapipe::api2::Input<mediapipe::NormalizedRect>(kNormRectTag)].SetName(kNormRectName) >>
-		face_landmarker.In(kNormRectTag);
+	//graph[::mediapipe::api2::Input<mediapipe::NormalizedRect>(kNormRectTag)].SetName(kNormRectName) >>
+	//	face_landmarker.In(kNormRectTag);
 
-	face_landmarker.Out(kNormLandmarksTag).SetName(kNormLandmarksName) >>
+	face_landmarker.Out(kBlendshapesTag).SetName(kBlendshapesName) >>
+		graph[::mediapipe::api2::Output<mediapipe::ClassificationList>(kBlendshapesTag)];
+	/*face_landmarker.Out(kNormLandmarksTag).SetName(kNormLandmarksName) >>
 		graph[::mediapipe::api2::Output<std::vector<mediapipe::NormalizedLandmarkList>>(kNormLandmarksTag)];
 	if (output_blendshape) {
 		face_landmarker.Out(kBlendshapesTag).SetName(kBlendshapesName) >>
@@ -622,7 +631,24 @@ static absl::lts_20230125::StatusOr<std::unique_ptr<mediapipe::tasks::core::Task
 	if (output_face_geometry) {
 		face_landmarker.Out(kFaceGeometryTag).SetName(kFaceGeometryName) >>
 			graph[::mediapipe::api2::Output<std::vector<mediapipe::tasks::vision::face_geometry::proto::FaceGeometry>>(kFaceGeometryTag)];
+	}*/
+
+#if 0
+	bool output_blendshapes = HasOutput(sc->OriginalNode(), kBlendshapesTag);
+	if (output_blendshapes && !sc->Options<FaceLandmarkerGraphOptions>()
+		.face_landmarks_detector_graph_options()
+		.has_face_blendshapes_graph_options()) {
+		return absl::InvalidArgumentError(absl::StrFormat(
+			"BLENDSHAPES Tag and blendshapes model must be both set. Get "
+			"BLENDSHAPES is set: %v, blendshapes "
+			"model "
+			"is set: %v",
+			output_blendshapes,
+			sc->Options<FaceLandmarkerGraphOptions>()
+			.face_landmarks_detector_graph_options()
+			.has_face_blendshapes_graph_options()));
 	}
+#endif
 
 	return mediapipe::tasks::core::TaskRunner::Create(
 		graph.GetConfig(),
@@ -696,18 +722,67 @@ static absl::lts_20230125::StatusOr<std::unique_ptr<mediapipe::tasks::core::Task
 }
 
 #include <opencv2/opencv.hpp>
+#include "mediapipe/tasks/cc/vision/utils/image_utils.h"
+constexpr char kPortraitImageName[] = "portrait.jpg";
+
+// Helper function to construct NormalizeRect proto.
+mediapipe::NormalizedRect MakeNormRect(float x_center, float y_center, float width,
+	float height, float rotation) {
+	mediapipe::NormalizedRect face_rect;
+	face_rect.set_x_center(x_center);
+	face_rect.set_y_center(y_center);
+	face_rect.set_width(width);
+	face_rect.set_height(height);
+	face_rect.set_rotation(rotation);
+	return face_rect;
+}
+
+#include <sstream>
 static void face_landmarker()
 {
-	auto task_runner = create_face_landmarker_runner_task(kFaceLandmarkerModelBundleName, true, false);
+	auto task_runner = create_face_landmarker_runner_task(kFaceLandmarkerWithBlendshapesModelBundleName, true, true);
 	std::cout << "ok: " << task_runner.ok() << std::endl;
 	if (!task_runner.ok())
 		return;
-	if (true)
-		return;
+
+	{
+		auto image = mediapipe::tasks::vision::DecodeImageFromFile(mediapipe::file::JoinPath("E:/projects/test_mediapipe_wrapper/x64/Debug/",
+			"portrait.jpg"));
+		std::cout << "Image ok: " << image.ok() << std::endl;
+		auto output_packets = (*task_runner)->Process(
+			{ {kImageName, mediapipe::MakePacket<mediapipe::Image>(std::move(*image))}
+			});
+		std::cout << "output_packets: " << output_packets.ok() << std::endl;
+
+		const auto& actual_blendshapes =
+			(*output_packets)[kBlendshapesName].Get<std::vector<mediapipe::ClassificationList>>();
+		std::cout << "ClassificationList (" << actual_blendshapes.size() << ")" << std::endl;
+		//struct Classification {
+		//	uint32_t index;
+		//	float score;
+		//	std::string label;
+		//};
+
+		std::stringstream ss;
+		ss << "local blendShapes = {\n";
+		for (auto& bs : actual_blendshapes[0].classification()) {
+			std::cout << bs.Utf8DebugString() << std::endl;
+			ss << "\t{\n";
+			ss << "\t\tscore = " << bs.score() << ",\n";
+			ss << "\t\tindex = " << bs.index() << ",\n";
+			ss << "\t\tlabel = \"" << bs.label() << "\"\n";
+			ss << "\t},\n";
+		}
+		ss << "}\n";
+		std::cout << ss.str() << std::endl;
+
+	}
+
+
 
 	cv::VideoCapture cap;
 	//(deviceId);
-	cap.open("17104891-headshot-of-a-young-happy-smiling-man.webp");
+	cap.open("E:/projects/test_mediapipe_wrapper/x64/Debug/portrait.png"); // portrait.jpg
 	
 	if (!cap.isOpened()) {
 		std::cerr << "Could not open device #0. Is a camera/webcam attached?" << std::endl;
@@ -734,24 +809,42 @@ static void face_landmarker()
 			return;
 		}
 
-		auto input_frame_for_input = std::make_unique<mediapipe::ImageFrame>();
+		auto input_frame_for_input = std::make_shared<mediapipe::ImageFrame>();
 		auto mp_image_format = static_cast<mediapipe::ImageFormat::Format>(image_format);
 		input_frame_for_input->CopyPixelData(mp_image_format, width, height, data, mediapipe::ImageFrame::kDefaultAlignmentBoundary);
 
-		auto imgFrame = mediapipe::Adopt(input_frame_for_input.release()).At(mediapipe::Timestamp(m_frame_timestamp));
-		std::cout << typeid(imgFrame).name() << std::endl;
-		//mediapipe::Image img{imgFrame};
-		/*auto output_packets = (*task_runner)->Process(
+		mediapipe::Image *img = new mediapipe::Image { input_frame_for_input };
+		auto packet = mediapipe::Adopt(img);
+		auto output_packets = (*task_runner)->Process(
 			{ {"image",
-			  mediapipe::MakePacket<mediapipe::Image>()}
+			  packet}
 			});
-
+		if (output_packets.ok())
+			std::cout << "ok" << std::endl;
+		std::cout << "Msg: " << output_packets.status().message() << std::endl;
 		++m_frame_timestamp;
 
 		const auto& actual_blendshapes =
-			(*output_packets)[kLandmarksName].Get<mediapipe::NormalizedLandmarkList>();
-		std::cout << "NormalizedLandmarkList:" << std::endl;
-		std::cout << actual_blendshapes.Utf8DebugString() << std::endl;*/
+			(*output_packets)[kBlendshapesName].Get<std::vector<mediapipe::ClassificationList>>();
+		std::cout << "ClassificationList ("<< actual_blendshapes.size()<<")"<< std::endl;
+		//struct Classification {
+		//	uint32_t index;
+		//	float score;
+		//	std::string label;
+		//};
+
+		std::stringstream ss;
+		ss << "local blendShapes = {\n";
+		for (auto& bs : actual_blendshapes[0].classification()) {
+			std::cout << bs.Utf8DebugString() << std::endl;
+			ss << "\t{\n";
+			ss << "\t\tscore = " << bs.score() << ",\n";
+			ss << "\t\tindex = " << bs.index() << ",\n";
+			ss << "\t\tlabel = \"" << bs.label() << "\"\n";
+			ss << "\t},\n";
+		}
+		ss << "}\n";
+		std::cout << ss.str() << std::endl;
 	}
 
 }
@@ -774,4 +867,30 @@ int main(int argc, char** argv) {
 	//google::InitGoogleLogging(argv[0]);
 	//CHECK(mediapipe::PrintHelloWorld().ok());
 	return 0;
+}
+
+#include "absl/flags/flag.h"
+
+extern absl::Flag<std::string> FLAGS_resource_root_dir;
+
+extern "C" {
+	__declspec(dllexport)
+		void test_exp(const char *rootPath) {
+		FLAGS_logtostderr = true;
+		FLAGS_log_dir = rootPath;
+		google::SetLogDestination(google::GLOG_INFO, (std::string{rootPath} + "/info.log").c_str());
+		google::InitGoogleLogging((std::string{rootPath} + "/test_mediapipe_wrapper.exe").c_str());
+		//google::SetLogDestination(ERROR, (std::string{rootPath} + "/error.log").c_str());
+		//google::SetLogDestination(WARN, (std::string{rootPath} + "/warn.log").c_str());
+		std::string srootPath = rootPath;
+		absl::SetFlag(&FLAGS_resource_root_dir, srootPath);
+		/*mediapipe::SetCustomGlobalResourceProvider([srootPath](const std::string& path, std::string* output, bool read_as_binary) {
+			auto newPath = srootPath + path;
+			std::cout << "LOAD FILE: " << newPath << std::endl;
+			return mediapipe::file::GetContents(newPath, output, read_as_binary);
+		});*/
+
+		face_landmarker();
+		//face(srootPath);
+	}
 }
