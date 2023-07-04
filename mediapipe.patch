@@ -1,0 +1,44 @@
+diff --git a/mediapipe/tasks/cc/core/BUILD b/mediapipe/tasks/cc/core/BUILD
+index a3e44c53..8d60556a 100644
+--- a/mediapipe/tasks/cc/core/BUILD
++++ b/mediapipe/tasks/cc/core/BUILD
+@@ -57,6 +57,7 @@ cc_library(
+     name = "external_file_handler",
+     srcs = ["external_file_handler.cc"],
+     hdrs = ["external_file_handler.h"],
++    visibility = ["//visibility:public"],
+     deps = [
+         "//mediapipe/framework/port:integral_types",
+         "//mediapipe/framework/port:status",
+@@ -303,6 +304,7 @@ cc_test_with_tflite(
+ cc_library(
+     name = "base_task_api",
+     hdrs = ["base_task_api.h"],
++    visibility = ["//visibility:public"],
+     deps = [
+         ":task_runner",
+         "//mediapipe/calculators/core:flow_limiter_calculator",
+diff --git a/mediapipe/tasks/cc/vision/face_geometry/BUILD b/mediapipe/tasks/cc/vision/face_geometry/BUILD
+index 6bd9912b..2dec179f 100644
+--- a/mediapipe/tasks/cc/vision/face_geometry/BUILD
++++ b/mediapipe/tasks/cc/vision/face_geometry/BUILD
+@@ -19,6 +19,7 @@ package(default_visibility = ["//mediapipe/tasks:internal"])
+ cc_library(
+     name = "face_geometry_from_landmarks_graph",
+     srcs = ["face_geometry_from_landmarks_graph.cc"],
++    visibility = ["//visibility:public"],
+     deps = [
+         "//mediapipe/calculators/core:begin_loop_calculator",
+         "//mediapipe/calculators/core:end_loop_calculator",
+diff --git a/mediapipe/tasks/cc/vision/face_landmarker/BUILD b/mediapipe/tasks/cc/vision/face_landmarker/BUILD
+index 16de2271..8bdd788a 100644
+--- a/mediapipe/tasks/cc/vision/face_landmarker/BUILD
++++ b/mediapipe/tasks/cc/vision/face_landmarker/BUILD
+@@ -169,6 +169,7 @@ cc_library(
+ cc_library(
+     name = "face_landmarker_graph",
+     srcs = ["face_landmarker_graph.cc"],
++    visibility = ["//visibility:public"],
+     deps = [
+         ":face_landmarks_detector_graph",
+         "//mediapipe/calculators/core:begin_loop_calculator",
