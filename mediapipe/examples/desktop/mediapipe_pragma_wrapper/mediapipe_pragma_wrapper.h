@@ -13,7 +13,15 @@
 #include <map>
 #include <vector>
 #include <variant>
+#include <thread>
+#include <mutex>
+#include <optional>
+#include <atomic>
+#include <array>
+#include <functional>
+#include <condition_variable>
 #include <cinttypes>
+#include <chrono>
 
 #ifdef DLLMPW_EX
 #ifdef __linux__
@@ -37,6 +45,11 @@ namespace mediapipe {
 	namespace tasks {
 		namespace core {
 			class TaskRunner;
+		};
+	};
+	namespace api2 {
+		namespace builder {
+			class Graph;
 		};
 	};
 };
@@ -184,65 +197,106 @@ namespace mpw {
 
 	struct StreamInputData : public BaseInputData {
 		std::shared_ptr< cv::VideoCapture> capture = nullptr;
+		std::shared_ptr< mediapipe::Image> currentFrameImage = nullptr;
 	};
 
 	class DLLMPW MotionCaptureManager {
 	public:
+		enum class LogSeverity : uint8_t {
+			Info = 0,
+			Warning,
+			Error
+		};
+
+		struct LandmarkData {
+			std::array<float, 3> pos;
+			float presence;
+			float visibility;
+		};
+
 		static std::shared_ptr< MotionCaptureManager> CreateFromImage(const std::string& source, std::string& outErr);
 		static std::shared_ptr< MotionCaptureManager> CreateFromVideo(const std::string& source, std::string& outErr);
 		static std::shared_ptr< MotionCaptureManager> CreateFromCamera(CameraDeviceId deviceId, std::string& outErr);
-		virtual ~MotionCaptureManager() = default;
+		~MotionCaptureManager();
 		bool Start(std::string& outErr);
-		bool ProcessNextFrame(std::string& outErr);
+
+		void LockResultData();
+		void UnlockResultData();
 
 		size_t GetBlendShapeCollectionCount() const;
-		bool GetBlendShapeCoefficient(size_t collectionIndex, BlendShape blendShape, float& outCoefficient);
+		bool GetBlendShapeCoefficient(size_t collectionIndex, BlendShape blendShape, float& outCoefficient) const;
+		bool GetBlendShapeCoefficients(size_t collectionIndex, std::vector<float> &outCoefficients) const;
+		void GetBlendShapeCoefficientLists(std::vector<std::vector<float>> &outCoefficientLists) const;
 
 		size_t GetPoseCollectionCount() const;
-		bool GetPoseWorldLandmarkPosition(size_t collectionIndex, PoseLandmark poseLandmark, std::array<float, 3>& outPosition, float& outPresence, float& outVisibility);
+		bool GetPoseWorldLandmark(size_t collectionIndex, PoseLandmark poseLandmark, LandmarkData &outLandmarkData) const;
+		bool GetPoseWorldLandmarks(size_t collectionIndex, std::vector<LandmarkData>& outLandmarks) const;
+		void GetPoseWorldLandmarkLists(std::vector<std::vector<LandmarkData>>& outLandmarks) const;
 
 		size_t GetHandCollectionCount() const;
-		bool GetHandWorldLandmarkPosition(size_t collectionIndex, HandLandmark handLandmark, std::array<float, 3>& outPosition, float& outPresence, float& outVisibility);
+		bool GetHandWorldLandmark(size_t collectionIndex, HandLandmark handLandmark, LandmarkData& outLandmarkData) const;
+		bool GetHandWorldLandmarks(size_t collectionIndex, std::vector<LandmarkData>& outLandmarks) const;
+		void GetHandWorldLandmarkLists(std::vector<std::vector<LandmarkData>>& outLandmarks) const;
+
+		std::optional<std::string> GetLastError() const;
+
+		bool IsFrameComplete() const;
+		void WaitForFrame();
 	private:
 		enum class SourceType : uint32_t {
 			Image = 0,
 			Video,
 			Camera
 		};
-		bool ProcessImage(mediapipe::Image& image, std::string& outErr);
 		using Source = std::variant<std::string, CameraDeviceId>;
 		static std::shared_ptr< MotionCaptureManager> Create(SourceType type, const Source& source, std::string& outErr);
 		MotionCaptureManager();
-		bool CreateFaceLandmarkerTask(std::string& outErr);
-		bool CreatePoseLandmarkerTask(std::string& outErr);
-		bool CreateHandLandmarkerTask(std::string& outErr);
+		bool CreateFaceLandmarkerTask(::mediapipe::api2::builder::Graph &graph, void *imgInput, std::string& outErr);
+		bool CreatePoseLandmarkerTask(::mediapipe::api2::builder::Graph &graph, void* imgInput, std::string& outErr);
+		bool CreateHandLandmarkerTask(::mediapipe::api2::builder::Graph &graph, void* imgInput, std::string& outErr);
+		void InitializeThreads();
+		bool InitializeSource(std::string& outErr);
+		bool UpdateFrame(std::string &outErr, mediapipe::Image **outImg);
+		bool StartNextFrame(std::string& outErr);
+		bool Process(std::string& outErr);
 
-		struct Task {
-			Task(const std::string& mdlName)
-				: modelName{ mdlName }
-			{}
-			std::string modelName;
-			TaskRunner taskRunner;
+		std::string m_faceLandmarkerModel{ "face_landmarker_v2_with_blendshapes.task" };
+		std::string m_poseLandmarkerModel{ "pose_landmarker.task" };
+		std::string m_handLandmarkerModel{ "hand_landmarker.task" };
+		TaskRunner m_taskRunner;
+
+		std::thread m_mainThread;
+		bool m_hasTask = false;
+		std::condition_variable m_taskCondition;
+		std::mutex m_taskMutex;
+
+		std::atomic<bool> m_frameComplete = false;
+		std::condition_variable m_frameCompleteCondition;
+		std::mutex m_frameCompleteMutex;
+		std::atomic<bool> m_running = true;
+		std::atomic<bool> m_autoAdvance = true;
+		bool m_firstFrameStarted = false;
+		std::chrono::steady_clock::time_point m_tFrameStart;
+
+		std::map<std::string, mediapipe::Packet> m_packetMap;
+		struct ResultDataSet {
+			bool hasBlendShapeCoefficients = false;
+			std::vector<std::vector<float>> blendShapeCoefficientLists;
+
+			bool hasPoseLandmarks = false;
+			std::vector<std::vector<LandmarkData>> poseLandmarkLists;
+
+			bool hasHandLandmarks = false;
+			std::vector<std::vector<LandmarkData>> handLandmarkLists;
+
+			std::optional<std::string> errorMessage {};
 		};
-		Task m_faceLandmarker{ "face_landmarker_v2_with_blendshapes.task" };
-		Task m_poseLandmarker{ "pose_landmarker.task" };
-		Task m_handLandmarker{ "hand_landmarker.task" };
-
 		struct {
-			std::map<std::string, mediapipe::Packet> packetMap;
-			const std::vector<mediapipe::ClassificationList>* collections = nullptr;
-		} m_blendShapeResult;
-
-		struct {
-			std::map<std::string, mediapipe::Packet> packetMap;
-			const std::vector<mediapipe::LandmarkList>* landmarkLists = nullptr;
-		} m_poseResult;
-
-		struct {
-			std::map<std::string, mediapipe::Packet> packetMap;
-			const std::vector<mediapipe::LandmarkList>* landmarkLists = nullptr;
-			const std::vector<mediapipe::ClassificationList>* handednessList = nullptr;
-		} m_handResult;
+			size_t frameIndex = 0;
+			std::recursive_mutex resultDataMutex;
+			ResultDataSet dataSet;
+			ResultDataSet tmpDataSet;
+		} m_resultData;
 
 		std::unique_ptr< BaseInputData> m_inputData = nullptr;
 		SourceType m_sourceType = SourceType::Image;
