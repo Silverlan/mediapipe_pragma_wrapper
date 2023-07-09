@@ -18,6 +18,7 @@
 #include "mediapipe/tasks/cc/vision/face_landmarker/proto/face_landmarker_graph_options.pb.h"
 #include "mediapipe/tasks/cc/vision/pose_landmarker/proto/pose_landmarker_graph_options.pb.h"
 #include "mediapipe/tasks/cc/vision/hand_landmarker/proto/hand_landmarker_graph_options.pb.h"
+#include "mediapipe/tasks/cc/vision/face_geometry/proto/face_geometry.pb.h"
 #include "mediapipe/tasks/cc/components/utils/gate.h"
 #include "mediapipe/framework/deps/file_path.h"
 #include "mediapipe/framework/port/file_helpers.h"
@@ -32,7 +33,7 @@
 #include <iostream>
 
 static bool g_initialized = false;
-std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::Create(SourceType type, const Source& source, std::string& outErr)
+std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::Create(SourceType type, const Source& source, std::string& outErr, Output enabledOutputs)
 {
 	if (!g_initialized)
 	{
@@ -42,6 +43,7 @@ std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::Create(So
 	auto manager = std::shared_ptr< MotionCaptureManager>{ new MotionCaptureManager{} };
 	manager->m_source = source;
 	manager->m_sourceType = type;
+	manager->m_enabledOutputs = enabledOutputs;
 	::mediapipe::api2::builder::Graph graph {};
 	using TPayload = decltype(graph[::mediapipe::api2::Input<mediapipe::Image>("")]);
 	TPayload imgInput = graph[::mediapipe::api2::Input<mediapipe::Image>("IMAGE")];
@@ -79,21 +81,21 @@ std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::Create(So
 	manager->InitializeThreads();
 	return manager;
 }
-std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromImage(const std::string& source, std::string& outErr)
+std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromImage(const std::string& source, std::string& outErr, Output enabledOutputs)
 {
-	return Create(SourceType::Image, source, outErr);
+	return Create(SourceType::Image, source, outErr,enabledOutputs);
 }
-std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromVideo(const std::string& source, std::string& outErr)
+std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromVideo(const std::string& source, std::string& outErr, Output enabledOutputs)
 {
-	return Create(SourceType::Video, source, outErr);
+	return Create(SourceType::Video, source, outErr, enabledOutputs);
 }
-std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromCamera(CameraDeviceId deviceId, std::string& outErr)
+std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromCamera(CameraDeviceId deviceId, std::string& outErr, Output enabledOutputs)
 {
-	return Create(SourceType::Camera, deviceId, outErr);
+	return Create(SourceType::Camera, deviceId, outErr, enabledOutputs);
 }
 
 mpw::MotionCaptureManager::MotionCaptureManager()
-	: m_source{ "" }, m_tFrameStart{}
+	: m_source{ "" }, m_tFrameStart{}, m_enabledOutputs{Output::Default}
 {}
 
 extern absl::Flag<std::string> FLAGS_resource_root_dir;
@@ -121,6 +123,23 @@ void mpw::MotionCaptureManager::LockResultData()
 void mpw::MotionCaptureManager::UnlockResultData()
 {
 	m_resultData.resultDataMutex.unlock();
+}
+size_t mpw::MotionCaptureManager::GetFaceGeometryCount() const
+{
+	return m_resultData.dataSet.faceGeometries.size();
+}
+bool mpw::MotionCaptureManager::GetFaceGeometry(size_t index, MeshData& outMeshData) const
+{
+	if (index >= m_resultData.dataSet.faceGeometries.size())
+		return false;
+	outMeshData = m_resultData.dataSet.faceGeometries[index];
+	return true;
+}
+const mpw::MeshData* mpw::MotionCaptureManager::GetFaceGeometry(size_t index) const
+{
+	if (index >= m_resultData.dataSet.faceGeometries.size())
+		return nullptr;
+	return &m_resultData.dataSet.faceGeometries[index];
 }
 size_t mpw::MotionCaptureManager::GetBlendShapeCollectionCount() const
 {
@@ -219,6 +238,9 @@ bool mpw::MotionCaptureManager::Process(std::string& outErr)
 	auto& blendShapeCoefficientLists = m_resultData.tmpDataSet.blendShapeCoefficientLists;
 	blendShapeCoefficientLists.clear();
 
+	auto& faceGeometries = m_resultData.tmpDataSet.faceGeometries;
+	faceGeometries.clear();
+
 	auto& poseLandmarkLists = m_resultData.tmpDataSet.poseLandmarkLists;
 	poseLandmarkLists.clear();
 
@@ -247,7 +269,7 @@ bool mpw::MotionCaptureManager::Process(std::string& outErr)
 	}
 	m_packetMap = std::move(outputPackets.value());
 	auto& packetBlendshapes = m_packetMap["blendshapes"];
-	if (!packetBlendshapes.IsEmpty()) {
+	if (!packetBlendshapes.IsEmpty() && IsOutputEnabled(Output::BlendShapeCoefficients)) {
 		auto& packetBlendShapeLists = packetBlendshapes.Get<std::vector<mediapipe::ClassificationList>>();
 
 		blendShapeCoefficientLists.resize(packetBlendShapeLists.size());
@@ -260,8 +282,36 @@ bool mpw::MotionCaptureManager::Process(std::string& outErr)
 		}
 	}
 
+	auto& packetFaceGeometry = m_packetMap["face_geometry"];
+	if (!packetFaceGeometry.IsEmpty() && IsOutputEnabled(Output::FaceGeometry)) {
+		auto& packetFaceGeometryLists = packetFaceGeometry.Get<std::vector<mediapipe::tasks::vision::face_geometry::proto::FaceGeometry>>();
+
+		faceGeometries.resize(packetFaceGeometryLists.size());
+		for (auto i = decltype(packetFaceGeometryLists.size()){0u}; i < packetFaceGeometryLists.size(); ++i) {
+			auto& packetFaceGeometryList = packetFaceGeometryLists[i];
+			auto& mesh = packetFaceGeometryList.mesh();
+			auto& geometry = faceGeometries[i];
+
+			auto numIndices = mesh.index_buffer_size();
+			auto numVertValues = mesh.vertex_buffer_size();
+			auto numVerts = numVertValues / 5;
+			geometry.indices.resize(numIndices);
+			geometry.vertices.resize(numVerts);
+			for (auto j = decltype(numIndices){0u}; j < numIndices; ++j) {
+				geometry.indices[j] = mesh.index_buffer(j);
+			}
+			for (auto j = decltype(numVerts){0u}; j < numVerts; ++j) {
+				geometry.vertices[j] = {
+					mesh.vertex_buffer(j *5),
+					mesh.vertex_buffer(j * 5 +1),
+					mesh.vertex_buffer(j * 5 +2)
+				};
+			}
+		}
+	}
+
 	auto& packetPose = m_packetMap["pose_world_landmarks"];
-	if (!packetPose.IsEmpty()) {
+	if (!packetPose.IsEmpty() && IsOutputEnabled(Output::PoseWorldLandmarks)) {
 		auto& packetPoseLandmarkLists = packetPose.Get<std::vector<mediapipe::LandmarkList>>();
 
 		poseLandmarkLists.resize(packetPoseLandmarkLists.size());
@@ -286,7 +336,7 @@ bool mpw::MotionCaptureManager::Process(std::string& outErr)
 	}
 
 	auto& packetHand = m_packetMap["hand_world_landmarks"];
-	if (!packetHand.IsEmpty()) {
+	if (!packetHand.IsEmpty() && IsOutputEnabled(Output::HandWorldLandmarks)) {
 		auto& packetHandLandmarkLists = packetHand.Get<std::vector<mediapipe::LandmarkList>>();
 
 		handLandmarkLists.resize(packetHandLandmarkLists.size());
@@ -311,15 +361,34 @@ bool mpw::MotionCaptureManager::Process(std::string& outErr)
 	}
 
 	auto& packetHandedness = m_packetMap["handedness"];
-	if (!packetHandedness.IsEmpty()) {
+	if (!packetHandedness.IsEmpty() && IsOutputEnabled(Output::HandWorldLandmarks)) {
 		// m_resultData.handednessList = &packetHandedness.Get<std::vector<mediapipe::ClassificationList>>(); // TODO
 	}
 	return true;
 }
 
+void mpw::MotionCaptureManager::Stop()
+{
+	if (!m_running)
+		return;
+	m_running = false;
+	m_taskCondition.notify_all();
+	m_frameCompleteCondition.notify_all();
+
+	if (m_mainThread.joinable())
+		m_mainThread.join();
+	cv::destroyWindow("MediaPipe");
+}
+
 bool mpw::MotionCaptureManager::Start(std::string& outErr)
 {
+	cv::namedWindow("MediaPipe");
 	return StartNextFrame(outErr);
+}
+
+bool mpw::MotionCaptureManager::IsOutputEnabled(Output output) const
+{
+	return (static_cast<uint32_t>(m_enabledOutputs) & static_cast<uint32_t>(output)) != 0;
 }
 
 bool mpw::MotionCaptureManager::StartNextFrame(std::string& outErr)
@@ -350,6 +419,8 @@ bool mpw::MotionCaptureManager::UpdateFrame(std::string& outErr, mediapipe::Imag
 	cv::Mat frameBgr;
 	if (!cap.read(frameBgr)) {
 		outErr = "Failed to read frame.";
+		// Loop
+		cap.set(cv::CAP_PROP_POS_FRAMES, 0);
 		return false;
 	}
 
@@ -378,6 +449,9 @@ bool mpw::MotionCaptureManager::UpdateFrame(std::string& outErr, mediapipe::Imag
 	auto& img = *static_cast<StreamInputData&>(*m_inputData).currentFrameImage;
 	img = { input_frame_for_input };
 	*outImg = &img;
+	cv::resize(frameBgr, frameBgr, cv::Size(300 *2, 169 * 2), cv::INTER_AREA);
+	cv::imshow("MediaPipe", frameBgr);
+	cv::waitKey(1);
 	return true;
 }
 
@@ -454,8 +528,14 @@ bool mpw::MotionCaptureManager::CreateFaceLandmarkerTask(::mediapipe::api2::buil
 	imgInput >>
 		faceLandmarker.In("IMAGE");
 
-	faceLandmarker.Out("BLENDSHAPES").SetName("blendshapes") >>
-		graph[::mediapipe::api2::Output< std::vector<mediapipe::ClassificationList>>("BLENDSHAPES")];
+	if (IsOutputEnabled(Output::BlendShapeCoefficients)) {
+		faceLandmarker.Out("BLENDSHAPES").SetName("blendshapes") >>
+			graph[::mediapipe::api2::Output< std::vector<mediapipe::ClassificationList>>("BLENDSHAPES")];
+	}
+	if (IsOutputEnabled(Output::FaceGeometry)) {
+		faceLandmarker.Out("FACE_GEOMETRY").SetName("face_geometry") >>
+			graph[::mediapipe::api2::Output< std::vector<mediapipe::tasks::vision::face_geometry::proto::FaceGeometry>>("FACE_GEOMETRY")];
+	}
 	return true;
 }
 bool mpw::MotionCaptureManager::CreatePoseLandmarkerTask(::mediapipe::api2::builder::Graph& graph, void* pimgInput, std::string& outErr) {
@@ -476,8 +556,10 @@ bool mpw::MotionCaptureManager::CreatePoseLandmarkerTask(::mediapipe::api2::buil
 	graph[::mediapipe::api2::Input<mediapipe::NormalizedRect>("NORM_RECT")].SetName("norm_rect") >>
 		poseLandmarker.In("NORM_RECT");
 
-	poseLandmarker.Out("WORLD_LANDMARKS").SetName("pose_world_landmarks") >>
-		graph[::mediapipe::api2::Output< std::vector<mediapipe::LandmarkList>>("POSE_WORLD_LANDMARKS")];
+	if (IsOutputEnabled(Output::PoseWorldLandmarks)) {
+		poseLandmarker.Out("WORLD_LANDMARKS").SetName("pose_world_landmarks") >>
+			graph[::mediapipe::api2::Output< std::vector<mediapipe::LandmarkList>>("POSE_WORLD_LANDMARKS")];
+	}
 	return true;
 }
 bool mpw::MotionCaptureManager::CreateHandLandmarkerTask(::mediapipe::api2::builder::Graph& graph, void* pimgInput, std::string& outErr) {
@@ -495,10 +577,13 @@ bool mpw::MotionCaptureManager::CreateHandLandmarkerTask(::mediapipe::api2::buil
 
 	imgInput >>
 		handLandmarker.In("IMAGE");
-	handLandmarker.Out("WORLD_LANDMARKS").SetName("hand_world_landmarks") >>
-		graph[::mediapipe::api2::Output<std::vector<mediapipe::LandmarkList>>("HAND_WORLD_LANDMARKS")];
-	handLandmarker.Out("HANDEDNESS").SetName("handedness") >>
-		graph[::mediapipe::api2::Output< std::vector<mediapipe::ClassificationList>>("HANDEDNESS")];
+	if (IsOutputEnabled(Output::HandWorldLandmarks)) {
+		handLandmarker.Out("WORLD_LANDMARKS").SetName("hand_world_landmarks") >>
+			graph[::mediapipe::api2::Output<std::vector<mediapipe::LandmarkList>>("HAND_WORLD_LANDMARKS")];
+
+		handLandmarker.Out("HANDEDNESS").SetName("handedness") >>
+			graph[::mediapipe::api2::Output< std::vector<mediapipe::ClassificationList>>("HANDEDNESS")];
+	}
 	return true;
 }
 void mpw::MotionCaptureManager::InitializeThreads()
@@ -531,6 +616,7 @@ void mpw::MotionCaptureManager::InitializeThreads()
 				m_resultData.dataSet.blendShapeCoefficientLists = std::move(m_resultData.tmpDataSet.blendShapeCoefficientLists);
 				m_resultData.dataSet.poseLandmarkLists = std::move(m_resultData.tmpDataSet.poseLandmarkLists);
 				m_resultData.dataSet.handLandmarkLists = std::move(m_resultData.tmpDataSet.handLandmarkLists);
+				m_resultData.dataSet.faceGeometries = std::move(m_resultData.tmpDataSet.faceGeometries);
 				m_resultData.dataSet.errorMessage = std::move(m_resultData.tmpDataSet.errorMessage);
 				++m_resultData.frameIndex;
 				m_resultData.resultDataMutex.unlock();
@@ -540,7 +626,7 @@ void mpw::MotionCaptureManager::InitializeThreads()
 				break;
 			if (m_autoAdvance) {
 				std::string err;
-				Process(err);
+				StartNextFrame(err);
 			}
 		}
 	} };
@@ -560,8 +646,388 @@ void mpw::MotionCaptureManager::WaitForFrame()
 		});
 }
 mpw::MotionCaptureManager::~MotionCaptureManager() {
-	m_running = false;
-	m_taskCondition.notify_all();
-	m_frameCompleteCondition.notify_all();
-	m_mainThread.join();
+	Stop();
+	if(m_mainThread.joinable())
+		m_mainThread.join();
+}
+
+const char* mpw::get_blend_shape_name(BlendShape blendShape)
+{
+	switch (blendShape)
+	{
+	case BlendShape::Neutral:
+		return "_neutral";
+	case BlendShape::BrowDownLeft:
+		return "browDownLeft";
+	case BlendShape::BrowDownRight:
+		return "browDownRight";
+	case BlendShape::BrowInnerUp:
+		return "browInnerUp";
+	case BlendShape::BrowOuterUpLeft:
+		return "browOuterUpLeft";
+	case BlendShape::BrowOuterUpRight:
+		return "browOuterUpRight";
+	case BlendShape::CheekPuff:
+		return "cheekPuff";
+	case BlendShape::CheekSquintLeft:
+		return "cheekSquintLeft";
+	case BlendShape::CheekSquintRight:
+		return "cheekSquintRight";
+	case BlendShape::EyeBlinkLeft:
+		return "eyeBlinkLeft";
+	case BlendShape::EyeBlinkRight:
+		return "eyeBlinkRight";
+	case BlendShape::EyeLookDownLeft:
+		return "eyeLookDownLeft";
+	case BlendShape::EyeLookDownRight:
+		return "eyeLookDownRight";
+	case BlendShape::EyeLookInLeft:
+		return "eyeLookInLeft";
+	case BlendShape::EyeLookInRight:
+		return "eyeLookInRight";
+	case BlendShape::EyeLookOutLeft:
+		return "eyeLookOutLeft";
+	case BlendShape::EyeLookOutRight:
+		return "eyeLookOutRight";
+	case BlendShape::EyeLookUpLeft:
+		return "eyeLookUpLeft";
+	case BlendShape::EyeLookUpRight:
+		return "eyeLookUpRight";
+	case BlendShape::EyeSquintLeft:
+		return "eyeSquintLeft";
+	case BlendShape::EyeSquintRight:
+		return "eyeSquintRight";
+	case BlendShape::EyeWideLeft:
+		return "eyeWideLeft";
+	case BlendShape::EyeWideRight:
+		return "eyeWideRight";
+	case BlendShape::JawForward:
+		return "jawForward";
+	case BlendShape::JawLeft:
+		return "jawLeft";
+	case BlendShape::JawOpen:
+		return "jawOpen";
+	case BlendShape::JawRight:
+		return "jawRight";
+	case BlendShape::MouthClose:
+		return "mouthClose";
+	case BlendShape::MouthDimpleLeft:
+		return "mouthDimpleLeft";
+	case BlendShape::MouthDimpleRight:
+		return "mouthDimpleRight";
+	case BlendShape::MouthFrownLeft:
+		return "mouthFrownLeft";
+	case BlendShape::MouthFrownRight:
+		return "mouthFrownRight";
+	case BlendShape::MouthFunnel:
+		return "mouthFunnel";
+	case BlendShape::MouthLeft:
+		return "mouthLeft";
+	case BlendShape::MouthLowerDownLeft:
+		return "mouthLowerDownLeft";
+	case BlendShape::MouthLowerDownRight:
+		return "mouthLowerDownRight";
+	case BlendShape::MouthPressLeft:
+		return "mouthPressLeft";
+	case BlendShape::MouthPressRight:
+		return "mouthPressRight";
+	case BlendShape::MouthPucker:
+		return "mouthPucker";
+	case BlendShape::MouthRight:
+		return "mouthRight";
+	case BlendShape::MouthRollLower:
+		return "mouthRollLower";
+	case BlendShape::MouthRollUpper:
+		return "mouthRollUpper";
+	case BlendShape::MouthShrugLower:
+		return "mouthShrugLower";
+	case BlendShape::MouthShrugUpper:
+		return "mouthShrugUpper";
+	case BlendShape::MouthSmileLeft:
+		return "mouthSmileLeft";
+	case BlendShape::MouthSmileRight:
+		return "mouthSmileRight";
+	case BlendShape::MouthStretchLeft:
+		return "mouthStretchLeft";
+	case BlendShape::MouthStretchRight:
+		return "mouthStretchRight";
+	case BlendShape::MouthUpperUpLeft:
+		return "mouthUpperUpLeft";
+	case BlendShape::MouthUpperUpRight:
+		return "mouthUpperUpRight";
+	case BlendShape::NoseSneerLeft:
+		return "noseSneerLeft";
+	case BlendShape::NoseSneerRight:
+		return "noseSneerRight";
+	default:
+		return "";
+	}
+}
+std::optional<mpw::BlendShape> mpw::get_blend_shape_enum(const char* name)
+{
+	static const std::unordered_map<std::string, BlendShape> blendShapeMap = {
+		{"_neutral", BlendShape::Neutral},
+		{"browDownLeft", BlendShape::BrowDownLeft},
+		{"browDownRight", BlendShape::BrowDownRight},
+		{"browInnerUp", BlendShape::BrowInnerUp},
+		{"browOuterUpLeft", BlendShape::BrowOuterUpLeft},
+		{"browOuterUpRight", BlendShape::BrowOuterUpRight},
+		{"cheekPuff", BlendShape::CheekPuff},
+		{"cheekSquintLeft", BlendShape::CheekSquintLeft},
+		{"cheekSquintRight", BlendShape::CheekSquintRight},
+		{"eyeBlinkLeft", BlendShape::EyeBlinkLeft},
+		{"eyeBlinkRight", BlendShape::EyeBlinkRight},
+		{"eyeLookDownLeft", BlendShape::EyeLookDownLeft},
+		{"eyeLookDownRight", BlendShape::EyeLookDownRight},
+		{"eyeLookInLeft", BlendShape::EyeLookInLeft},
+		{"eyeLookInRight", BlendShape::EyeLookInRight},
+		{"eyeLookOutLeft", BlendShape::EyeLookOutLeft},
+		{"eyeLookOutRight", BlendShape::EyeLookOutRight},
+		{"eyeLookUpLeft", BlendShape::EyeLookUpLeft},
+		{"eyeLookUpRight", BlendShape::EyeLookUpRight},
+		{"eyeSquintLeft", BlendShape::EyeSquintLeft},
+		{"eyeSquintRight", BlendShape::EyeSquintRight},
+		{"eyeWideLeft", BlendShape::EyeWideLeft},
+		{"eyeWideRight", BlendShape::EyeWideRight},
+		{"jawForward", BlendShape::JawForward},
+		{"jawLeft", BlendShape::JawLeft},
+		{"jawOpen", BlendShape::JawOpen},
+		{"jawRight", BlendShape::JawRight},
+		{"mouthClose", BlendShape::MouthClose},
+		{"mouthDimpleLeft", BlendShape::MouthDimpleLeft},
+		{"mouthDimpleRight", BlendShape::MouthDimpleRight},
+		{"mouthFrownLeft", BlendShape::MouthFrownLeft},
+		{"mouthFrownRight", BlendShape::MouthFrownRight},
+		{"mouthFunnel", BlendShape::MouthFunnel},
+		{"mouthLeft", BlendShape::MouthLeft},
+		{"mouthLowerDownLeft", BlendShape::MouthLowerDownLeft},
+		{"mouthLowerDownRight", BlendShape::MouthLowerDownRight},
+		{"mouthPressLeft", BlendShape::MouthPressLeft},
+		{"mouthPressRight", BlendShape::MouthPressRight},
+		{"mouthPucker", BlendShape::MouthPucker},
+		{"mouthRight", BlendShape::MouthRight},
+		{"mouthRollLower", BlendShape::MouthRollLower},
+		{"mouthRollUpper", BlendShape::MouthRollUpper},
+		{"mouthShrugLower", BlendShape::MouthShrugLower},
+		{"mouthShrugUpper", BlendShape::MouthShrugUpper},
+		{"mouthSmileLeft", BlendShape::MouthSmileLeft},
+		{"mouthSmileRight", BlendShape::MouthSmileRight},
+		{"mouthStretchLeft", BlendShape::MouthStretchLeft},
+		{"mouthStretchRight", BlendShape::MouthStretchRight},
+		{"mouthUpperUpLeft", BlendShape::MouthUpperUpLeft},
+		{"mouthUpperUpRight", BlendShape::MouthUpperUpRight},
+		{"noseSneerLeft", BlendShape::NoseSneerLeft},
+		{"noseSneerRight", BlendShape::NoseSneerRight}
+	};
+
+	auto it = blendShapeMap.find(name);
+	if (it != blendShapeMap.end()) {
+		return it->second;
+	}
+
+	return {};
+}
+
+const char* mpw::get_pose_landmark_name(PoseLandmark poseLandmark)
+{
+	switch (poseLandmark)
+	{
+	case PoseLandmark::Nose:
+		return "nose";
+	case PoseLandmark::LeftEyeInner:
+		return "left eye (inner)";
+	case PoseLandmark::LeftEye:
+		return "left eye";
+	case PoseLandmark::LeftEyeOuter:
+		return "left eye (outer)";
+	case PoseLandmark::RightEyeInner:
+		return "right eye (inner)";
+	case PoseLandmark::RightEye:
+		return "right eye";
+	case PoseLandmark::RightEyeOuter:
+		return "right eye (outer)";
+	case PoseLandmark::LeftEar:
+		return "left ear";
+	case PoseLandmark::RightEar:
+		return "right ear";
+	case PoseLandmark::MouthLeft:
+		return "mouth (left)";
+	case PoseLandmark::MouthRight:
+		return "mouth (right)";
+	case PoseLandmark::LeftShoulder:
+		return "left shoulder";
+	case PoseLandmark::RightShoulder:
+		return "right shoulder";
+	case PoseLandmark::LeftElbow:
+		return "left elbow";
+	case PoseLandmark::RightElbow:
+		return "right elbow";
+	case PoseLandmark::LeftWrist:
+		return "left wrist";
+	case PoseLandmark::RightWrist:
+		return "right wrist";
+	case PoseLandmark::LeftPinky:
+		return "left pinky";
+	case PoseLandmark::RightPinky:
+		return "right pinky";
+	case PoseLandmark::LeftIndex:
+		return "left index";
+	case PoseLandmark::RightIndex:
+		return "right index";
+	case PoseLandmark::LeftThumb:
+		return "left thumb";
+	case PoseLandmark::RightThumb:
+		return "right thumb";
+	case PoseLandmark::LeftHip:
+		return "left hip";
+	case PoseLandmark::RightHip:
+		return "right hip";
+	case PoseLandmark::LeftKnee:
+		return "left knee";
+	case PoseLandmark::RightKnee:
+		return "right knee";
+	case PoseLandmark::LeftAnkle:
+		return "left ankle";
+	case PoseLandmark::RightAnkle:
+		return "right ankle";
+	case PoseLandmark::LeftHeel:
+		return "left heel";
+	case PoseLandmark::RightHeel:
+		return "right heel";
+	case PoseLandmark::LeftFootIndex:
+		return "left foot index";
+	case PoseLandmark::RightFootIndex:
+		return "right foot index";
+	default:
+		return "";
+	}
+}
+std::optional<mpw::PoseLandmark> mpw::get_pose_landmark_enum(const char* name)
+{
+	static const std::unordered_map<std::string, PoseLandmark> poseLandmarkMap = {
+		{"nose", PoseLandmark::Nose},
+		{"left eye (inner)", PoseLandmark::LeftEyeInner},
+		{"left eye", PoseLandmark::LeftEye},
+		{"left eye (outer)", PoseLandmark::LeftEyeOuter},
+		{"right eye (inner)", PoseLandmark::RightEyeInner},
+		{"right eye", PoseLandmark::RightEye},
+		{"right eye (outer)", PoseLandmark::RightEyeOuter},
+		{"left ear", PoseLandmark::LeftEar},
+		{"right ear", PoseLandmark::RightEar},
+		{"mouth (left)", PoseLandmark::MouthLeft},
+		{"mouth (right)", PoseLandmark::MouthRight},
+		{"left shoulder", PoseLandmark::LeftShoulder},
+		{"right shoulder", PoseLandmark::RightShoulder},
+		{"left elbow", PoseLandmark::LeftElbow},
+		{"right elbow", PoseLandmark::RightElbow},
+		{"left wrist", PoseLandmark::LeftWrist},
+		{"right wrist", PoseLandmark::RightWrist},
+		{"left pinky", PoseLandmark::LeftPinky},
+		{"right pinky", PoseLandmark::RightPinky},
+		{"left index", PoseLandmark::LeftIndex},
+		{"right index", PoseLandmark::RightIndex},
+		{"left thumb", PoseLandmark::LeftThumb},
+		{"right thumb", PoseLandmark::RightThumb},
+		{"left hip", PoseLandmark::LeftHip},
+		{"right hip", PoseLandmark::RightHip},
+		{"left knee", PoseLandmark::LeftKnee},
+		{"right knee", PoseLandmark::RightKnee},
+		{"left ankle", PoseLandmark::LeftAnkle},
+		{"right ankle", PoseLandmark::RightAnkle},
+		{"left heel", PoseLandmark::LeftHeel},
+		{"right heel", PoseLandmark::RightHeel},
+		{"left foot index", PoseLandmark::LeftFootIndex},
+		{"right foot index", PoseLandmark::RightFootIndex}
+	};
+
+	auto it = poseLandmarkMap.find(name);
+	if (it != poseLandmarkMap.end()) {
+		return it->second;
+	}
+
+	return {};
+}
+
+const char* mpw::get_hand_landmark_name(HandLandmark handLandmark)
+{
+	switch (handLandmark)
+	{
+	case HandLandmark::Wrist:
+		return "wrist";
+	case HandLandmark::ThumbCMC:
+		return "thumb CMC";
+	case HandLandmark::ThumbMCP:
+		return "thumb MCP";
+	case HandLandmark::ThumbIP:
+		return "thumb IP";
+	case HandLandmark::ThumbTip:
+		return "thumb tip";
+	case HandLandmark::IndexFingerMCP:
+		return "index finger MCP";
+	case HandLandmark::IndexFingerPIP:
+		return "index finger PIP";
+	case HandLandmark::IndexFingerDIP:
+		return "index finger DIP";
+	case HandLandmark::IndexFingerTip:
+		return "index finger tip";
+	case HandLandmark::MiddleFingerMCP:
+		return "middle finger MCP";
+	case HandLandmark::MiddleFingerPIP:
+		return "middle finger PIP";
+	case HandLandmark::MiddleFingerDIP:
+		return "middle finger DIP";
+	case HandLandmark::MiddleFingerTip:
+		return "middle finger tip";
+	case HandLandmark::RingFingerMCP:
+		return "ring finger MCP";
+	case HandLandmark::RingFingerPIP:
+		return "ring finger PIP";
+	case HandLandmark::RingFingerDIP:
+		return "ring finger DIP";
+	case HandLandmark::RingFingerTip:
+		return "ring finger tip";
+	case HandLandmark::PinkyMCP:
+		return "pinky MCP";
+	case HandLandmark::PinkyPIP:
+		return "pinky PIP";
+	case HandLandmark::PinkyDIP:
+		return "pinky DIP";
+	case HandLandmark::PinkyTip:
+		return "pinky tip";
+	default:
+		return "";
+	}
+}
+std::optional<mpw::HandLandmark> mpw::get_hand_landmark_enum(const char* name)
+{
+	static const std::unordered_map<std::string, HandLandmark> handLandmarkMap = {
+		{"wrist", HandLandmark::Wrist},
+		{"thumb CMC", HandLandmark::ThumbCMC},
+		{"thumb MCP", HandLandmark::ThumbMCP},
+		{"thumb IP", HandLandmark::ThumbIP},
+		{"thumb tip", HandLandmark::ThumbTip},
+		{"index finger MCP", HandLandmark::IndexFingerMCP},
+		{"index finger PIP", HandLandmark::IndexFingerPIP},
+		{"index finger DIP", HandLandmark::IndexFingerDIP},
+		{"index finger tip", HandLandmark::IndexFingerTip},
+		{"middle finger MCP", HandLandmark::MiddleFingerMCP},
+		{"middle finger PIP", HandLandmark::MiddleFingerPIP},
+		{"middle finger DIP", HandLandmark::MiddleFingerDIP},
+		{"middle finger tip", HandLandmark::MiddleFingerTip},
+		{"ring finger MCP", HandLandmark::RingFingerMCP},
+		{"ring finger PIP", HandLandmark::RingFingerPIP},
+		{"ring finger DIP", HandLandmark::RingFingerDIP},
+		{"ring finger tip", HandLandmark::RingFingerTip},
+		{"pinky MCP", HandLandmark::PinkyMCP},
+		{"pinky PIP", HandLandmark::PinkyPIP},
+		{"pinky DIP", HandLandmark::PinkyDIP},
+		{"pinky tip", HandLandmark::PinkyTip}
+	};
+
+	auto it = handLandmarkMap.find(name);
+	if (it != handLandmarkMap.end()) {
+		return it->second;
+	}
+
+	return {};
 }

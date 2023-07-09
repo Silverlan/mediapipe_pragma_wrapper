@@ -122,6 +122,8 @@ namespace mpw {
 
 		Count
 	};
+	DLLMPW const char* get_blend_shape_name(BlendShape blendShape);
+	DLLMPW std::optional<BlendShape> get_blend_shape_enum(const char* name);
 
 	enum class PoseLandmark : uint32_t {
 		Nose = 0,
@@ -160,6 +162,8 @@ namespace mpw {
 
 		Count
 	};
+	DLLMPW const char* get_pose_landmark_name(PoseLandmark poseLandmark);
+	DLLMPW std::optional<PoseLandmark> get_pose_landmark_enum(const char* name);
 
 	enum class HandLandmark : uint32_t {
 		Wrist = 0,
@@ -186,6 +190,8 @@ namespace mpw {
 
 		Count
 	};
+	DLLMPW const char* get_hand_landmark_name(HandLandmark poseLandmark);
+	DLLMPW std::optional<HandLandmark> get_hand_landmark_enum(const char* name);
 
 	DLLMPW void init(const char* rootPath, const char* dataPath);
 
@@ -200,12 +206,20 @@ namespace mpw {
 		std::shared_ptr< mediapipe::Image> currentFrameImage = nullptr;
 	};
 
+	struct MeshData {
+		std::vector<uint32_t> indices;
+		std::vector<std::array<float, 3>> vertices;
+	};
+
 	class DLLMPW MotionCaptureManager {
 	public:
-		enum class LogSeverity : uint8_t {
-			Info = 0,
-			Warning,
-			Error
+		enum class Output : uint8_t {
+			None = 0,
+			BlendShapeCoefficients = 1,
+			FaceGeometry = BlendShapeCoefficients<<1,
+			PoseWorldLandmarks = FaceGeometry << 1,
+			HandWorldLandmarks = PoseWorldLandmarks << 1,
+			Default = BlendShapeCoefficients | PoseWorldLandmarks | HandWorldLandmarks
 		};
 
 		struct LandmarkData {
@@ -214,11 +228,14 @@ namespace mpw {
 			float visibility;
 		};
 
-		static std::shared_ptr< MotionCaptureManager> CreateFromImage(const std::string& source, std::string& outErr);
-		static std::shared_ptr< MotionCaptureManager> CreateFromVideo(const std::string& source, std::string& outErr);
-		static std::shared_ptr< MotionCaptureManager> CreateFromCamera(CameraDeviceId deviceId, std::string& outErr);
+		static std::shared_ptr< MotionCaptureManager> CreateFromImage(const std::string& source, std::string& outErr, Output enabledOutputs = Output::Default);
+		static std::shared_ptr< MotionCaptureManager> CreateFromVideo(const std::string& source, std::string& outErr, Output enabledOutputs = Output::Default);
+		static std::shared_ptr< MotionCaptureManager> CreateFromCamera(CameraDeviceId deviceId, std::string& outErr, Output enabledOutputs = Output::Default);
 		~MotionCaptureManager();
 		bool Start(std::string& outErr);
+		void Stop();
+
+		bool IsOutputEnabled(Output output) const;
 
 		void LockResultData();
 		void UnlockResultData();
@@ -227,6 +244,10 @@ namespace mpw {
 		bool GetBlendShapeCoefficient(size_t collectionIndex, BlendShape blendShape, float& outCoefficient) const;
 		bool GetBlendShapeCoefficients(size_t collectionIndex, std::vector<float> &outCoefficients) const;
 		void GetBlendShapeCoefficientLists(std::vector<std::vector<float>> &outCoefficientLists) const;
+
+		size_t GetFaceGeometryCount() const;
+		bool GetFaceGeometry(size_t index, MeshData &outMeshData) const;
+		const MeshData *GetFaceGeometry(size_t index) const;
 
 		size_t GetPoseCollectionCount() const;
 		bool GetPoseWorldLandmark(size_t collectionIndex, PoseLandmark poseLandmark, LandmarkData &outLandmarkData) const;
@@ -249,7 +270,7 @@ namespace mpw {
 			Camera
 		};
 		using Source = std::variant<std::string, CameraDeviceId>;
-		static std::shared_ptr< MotionCaptureManager> Create(SourceType type, const Source& source, std::string& outErr);
+		static std::shared_ptr< MotionCaptureManager> Create(SourceType type, const Source& source, std::string& outErr, Output enabledOutputs);
 		MotionCaptureManager();
 		bool CreateFaceLandmarkerTask(::mediapipe::api2::builder::Graph &graph, void *imgInput, std::string& outErr);
 		bool CreatePoseLandmarkerTask(::mediapipe::api2::builder::Graph &graph, void* imgInput, std::string& outErr);
@@ -283,6 +304,9 @@ namespace mpw {
 			bool hasBlendShapeCoefficients = false;
 			std::vector<std::vector<float>> blendShapeCoefficientLists;
 
+			bool hasFaceGeometries = false;
+			std::vector<MeshData> faceGeometries;
+
 			bool hasPoseLandmarks = false;
 			std::vector<std::vector<LandmarkData>> poseLandmarkLists;
 
@@ -298,10 +322,15 @@ namespace mpw {
 			ResultDataSet tmpDataSet;
 		} m_resultData;
 
+		Output m_enabledOutputs;
 		std::unique_ptr< BaseInputData> m_inputData = nullptr;
 		SourceType m_sourceType = SourceType::Image;
 		Source m_source;
 	};
+	MotionCaptureManager::Output operator|(MotionCaptureManager::Output lhs, MotionCaptureManager::Output rhs)
+	{
+		return static_cast<MotionCaptureManager::Output>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+	}
 };
 
 #endif
