@@ -204,6 +204,7 @@ namespace mpw {
 	struct StreamInputData : public BaseInputData {
 		std::shared_ptr< cv::VideoCapture> capture = nullptr;
 		std::shared_ptr< mediapipe::Image> currentFrameImage = nullptr;
+		std::chrono::steady_clock::time_point startTime;
 	};
 
 	struct MeshData {
@@ -272,12 +273,17 @@ namespace mpw {
 		using Source = std::variant<std::string, CameraDeviceId>;
 		static std::shared_ptr< MotionCaptureManager> Create(SourceType type, const Source& source, std::string& outErr, Output enabledOutputs);
 		MotionCaptureManager();
-		bool CreateFaceLandmarkerTask(::mediapipe::api2::builder::Graph &graph, void *imgInput, std::string& outErr);
-		bool CreatePoseLandmarkerTask(::mediapipe::api2::builder::Graph &graph, void* imgInput, std::string& outErr);
-		bool CreateHandLandmarkerTask(::mediapipe::api2::builder::Graph &graph, void* imgInput, std::string& outErr);
+		template <class TPayloadImg>
+		bool CreateFaceLandmarkerTask(::mediapipe::api2::builder::Graph &graph, TPayloadImg&imgInput, std::string& outErr);
+		template <class TPayloadImg, class TPayloadTrackingIds>
+		bool CreatePoseLandmarkerTask(::mediapipe::api2::builder::Graph &graph, TPayloadImg& imgInput, TPayloadTrackingIds &trackingIdsInput, std::string& outErr);
+		template <class TPayloadImg, class TPayloadTrackingIds>
+		bool CreateHandLandmarkerTask(::mediapipe::api2::builder::Graph &graph, TPayloadImg& imgInput, TPayloadTrackingIds &trackingIdsInput, std::string& outErr);
+		template <class TPayloadWorldLandmarks, class TPayloadTrackingIds>
+		void CreateSmoothFilter(::mediapipe::api2::builder::Graph& graph, TPayloadWorldLandmarks&worldLandmarks, TPayloadTrackingIds&trackingIdsInput,const char *outputName, const char* graphOutputName);
 		void InitializeThreads();
 		bool InitializeSource(std::string& outErr);
-		bool UpdateFrame(std::string &outErr, mediapipe::Image **outImg);
+		bool UpdateFrame(std::string &outErr, mediapipe::Image **outImg, size_t &outFrameIndex);
 		bool StartNextFrame(std::string& outErr);
 		bool Process(std::string& outErr);
 

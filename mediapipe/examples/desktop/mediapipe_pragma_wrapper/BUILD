@@ -19,6 +19,7 @@ cc_binary(
 		"//mediapipe/tasks/cc/vision/hand_landmarker:hand_landmarker_graph",
 		"//mediapipe/tasks/cc/vision/face_geometry:face_geometry_from_landmarks_graph",
 		"//mediapipe/tasks/cc/vision/utils:image_utils",
+		"//mediapipe/calculators/util:multi_world_landmarks_smoothing_calculator",
     ],
     linkshared = 1,
     copts = ["/DCOMPILING_DLL"],
