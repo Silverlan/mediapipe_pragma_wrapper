@@ -208,8 +208,18 @@ namespace mpw {
 	};
 
 	struct MeshData {
+		std::array<float, 16> poseMatrix;
 		std::vector<uint32_t> indices;
 		std::vector<std::array<float, 3>> vertices;
+	};
+
+	struct SmoothingFilterSettings {
+		float beta = 0.f;
+		bool disableValueScaling = false;
+		float frequency = 30.f;
+		float minCutoff = 1.f;
+		float derivateCutoff = 1.f;
+		float minAllowedObjectScale = 1e-06f;
 	};
 
 	class DLLMPW MotionCaptureManager {
@@ -229,9 +239,14 @@ namespace mpw {
 			float visibility;
 		};
 
-		static std::shared_ptr< MotionCaptureManager> CreateFromImage(const std::string& source, std::string& outErr, Output enabledOutputs = Output::Default);
-		static std::shared_ptr< MotionCaptureManager> CreateFromVideo(const std::string& source, std::string& outErr, Output enabledOutputs = Output::Default);
-		static std::shared_ptr< MotionCaptureManager> CreateFromCamera(CameraDeviceId deviceId, std::string& outErr, Output enabledOutputs = Output::Default);
+		struct CreationInfo {
+			Output enabledOutputs = Output::Default;
+			SmoothingFilterSettings smoothingFilterSettings{};
+		};
+
+		static std::shared_ptr< MotionCaptureManager> CreateFromImage(const std::string& source, std::string& outErr, const CreationInfo& creationInfo = {});
+		static std::shared_ptr< MotionCaptureManager> CreateFromVideo(const std::string& source, std::string& outErr, const CreationInfo& creationInfo = {});
+		static std::shared_ptr< MotionCaptureManager> CreateFromCamera(CameraDeviceId deviceId, std::string& outErr, const CreationInfo& creationInfo = {});
 		~MotionCaptureManager();
 		bool Start(std::string& outErr);
 		void Stop();
@@ -271,16 +286,16 @@ namespace mpw {
 			Camera
 		};
 		using Source = std::variant<std::string, CameraDeviceId>;
-		static std::shared_ptr< MotionCaptureManager> Create(SourceType type, const Source& source, std::string& outErr, Output enabledOutputs);
+		static std::shared_ptr< MotionCaptureManager> Create(SourceType type, const Source& source, std::string& outErr, const CreationInfo& creationInfo);
 		MotionCaptureManager();
 		template <class TPayloadImg>
 		bool CreateFaceLandmarkerTask(::mediapipe::api2::builder::Graph &graph, TPayloadImg&imgInput, std::string& outErr);
 		template <class TPayloadImg, class TPayloadTrackingIds>
-		bool CreatePoseLandmarkerTask(::mediapipe::api2::builder::Graph &graph, TPayloadImg& imgInput, TPayloadTrackingIds &trackingIdsInput, std::string& outErr);
+		bool CreatePoseLandmarkerTask(::mediapipe::api2::builder::Graph &graph, TPayloadImg& imgInput, TPayloadTrackingIds &trackingIdsInput, const SmoothingFilterSettings& smoothingFilterSettings, std::string& outErr);
 		template <class TPayloadImg, class TPayloadTrackingIds>
-		bool CreateHandLandmarkerTask(::mediapipe::api2::builder::Graph &graph, TPayloadImg& imgInput, TPayloadTrackingIds &trackingIdsInput, std::string& outErr);
+		bool CreateHandLandmarkerTask(::mediapipe::api2::builder::Graph &graph, TPayloadImg& imgInput, TPayloadTrackingIds &trackingIdsInput, const SmoothingFilterSettings& smoothingFilterSettings, std::string& outErr);
 		template <class TPayloadWorldLandmarks, class TPayloadTrackingIds>
-		void CreateSmoothFilter(::mediapipe::api2::builder::Graph& graph, TPayloadWorldLandmarks&worldLandmarks, TPayloadTrackingIds&trackingIdsInput,const char *outputName, const char* graphOutputName);
+		void CreateSmoothFilter(::mediapipe::api2::builder::Graph& graph, TPayloadWorldLandmarks&worldLandmarks, TPayloadTrackingIds&trackingIdsInput,const char *outputName, const char* graphOutputName, const SmoothingFilterSettings& smoothingFilterSettings);
 		void InitializeThreads();
 		bool InitializeSource(std::string& outErr);
 		bool UpdateFrame(std::string &outErr, mediapipe::Image **outImg, size_t &outFrameIndex);
@@ -304,6 +319,8 @@ namespace mpw {
 		std::atomic<bool> m_autoAdvance = true;
 		bool m_firstFrameStarted = false;
 		std::chrono::steady_clock::time_point m_tFrameStart;
+		size_t m_timeOffset = 0;
+		size_t m_curTime = 0;
 
 		std::map<std::string, mediapipe::Packet> m_packetMap;
 		struct ResultDataSet {

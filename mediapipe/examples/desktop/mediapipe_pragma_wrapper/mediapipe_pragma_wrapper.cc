@@ -35,7 +35,7 @@
 #include <iostream>
 
 static bool g_initialized = false;
-std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::Create(SourceType type, const Source& source, std::string& outErr, Output enabledOutputs)
+std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::Create(SourceType type, const Source& source, std::string& outErr, const CreationInfo& creationInfo)
 {
 	if (!g_initialized)
 	{
@@ -45,7 +45,7 @@ std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::Create(So
 	auto manager = std::shared_ptr< MotionCaptureManager>{ new MotionCaptureManager{} };
 	manager->m_source = source;
 	manager->m_sourceType = type;
-	manager->m_enabledOutputs = enabledOutputs;
+	manager->m_enabledOutputs = creationInfo.enabledOutputs;
 	::mediapipe::api2::builder::Graph graph {};
 	auto imgInput = graph[::mediapipe::api2::Input<mediapipe::Image>("IMAGE")];
 	imgInput.SetName("image");
@@ -58,12 +58,12 @@ std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::Create(So
 		outErr = "Failed to create face landmarker task: " + outErr;
 		return nullptr;
 	}
-	if (!manager->CreatePoseLandmarkerTask(graph, imgInput, trackingIdInput, outErr))
+	if (!manager->CreatePoseLandmarkerTask(graph, imgInput, trackingIdInput, creationInfo.smoothingFilterSettings, outErr))
 	{
 		outErr = "Failed to create pose landmarker task: " + outErr;
 		return nullptr;
 	}
-	if (!manager->CreateHandLandmarkerTask(graph, imgInput, trackingIdInput, outErr))
+	if (!manager->CreateHandLandmarkerTask(graph, imgInput, trackingIdInput, creationInfo.smoothingFilterSettings, outErr))
 	{
 		outErr = "Failed to create hand landmarker task: " + outErr;
 		return nullptr;
@@ -86,17 +86,17 @@ std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::Create(So
 	manager->InitializeThreads();
 	return manager;
 }
-std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromImage(const std::string& source, std::string& outErr, Output enabledOutputs)
+std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromImage(const std::string& source, std::string& outErr, const CreationInfo& creationInfo)
 {
-	return Create(SourceType::Image, source, outErr,enabledOutputs);
+	return Create(SourceType::Image, source, outErr, creationInfo);
 }
-std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromVideo(const std::string& source, std::string& outErr, Output enabledOutputs)
+std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromVideo(const std::string& source, std::string& outErr, const CreationInfo& creationInfo)
 {
-	return Create(SourceType::Video, source, outErr, enabledOutputs);
+	return Create(SourceType::Video, source, outErr, creationInfo);
 }
-std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromCamera(CameraDeviceId deviceId, std::string& outErr, Output enabledOutputs)
+std::shared_ptr< mpw::MotionCaptureManager> mpw::MotionCaptureManager::CreateFromCamera(CameraDeviceId deviceId, std::string& outErr, const CreationInfo& creationInfo)
 {
-	return Create(SourceType::Camera, deviceId, outErr, enabledOutputs);
+	return Create(SourceType::Camera, deviceId, outErr, creationInfo);
 }
 
 mpw::MotionCaptureManager::MotionCaptureManager()
@@ -238,6 +238,27 @@ static mediapipe::NormalizedRect MakeNormRect(float x_center, float y_center, fl
 	return pose_rect;
 }
 
+static std::array<float,16>
+Convert4x4MatrixDataToArrayFormat(const mediapipe::MatrixData& matrix_data) {
+	std::array<float, 16> matrix_array;
+	for (int i = 0; i < 16; i++) {
+		matrix_array[i] = matrix_data.packed_data(i);
+	}
+
+	// Matrix array must be in the OpenGL-friendly column-major order. If
+	// `matrix_data` is in the row-major order, then transpose.
+	if (matrix_data.layout() == mediapipe::MatrixData::ROW_MAJOR) {
+		std::swap(matrix_array[1], matrix_array[4]);
+		std::swap(matrix_array[2], matrix_array[8]);
+		std::swap(matrix_array[3], matrix_array[12]);
+		std::swap(matrix_array[6], matrix_array[9]);
+		std::swap(matrix_array[7], matrix_array[13]);
+		std::swap(matrix_array[11], matrix_array[14]);
+	}
+
+	return matrix_array;
+}
+
 bool mpw::MotionCaptureManager::Process(std::string& outErr)
 {
 	auto& blendShapeCoefficientLists = m_resultData.tmpDataSet.blendShapeCoefficientLists;
@@ -310,6 +331,9 @@ bool mpw::MotionCaptureManager::Process(std::string& outErr)
 			auto& packetFaceGeometryList = packetFaceGeometryLists[i];
 			auto& mesh = packetFaceGeometryList.mesh();
 			auto& geometry = faceGeometries[i];
+
+			auto &matrixData = packetFaceGeometryList.pose_transform_matrix();
+			geometry.poseMatrix = Convert4x4MatrixDataToArrayFormat(matrixData);
 
 			auto numIndices = mesh.index_buffer_size();
 			auto numVertValues = mesh.vertex_buffer_size();
@@ -441,6 +465,7 @@ bool mpw::MotionCaptureManager::UpdateFrame(std::string& outErr, mediapipe::Imag
 		outErr = "Failed to read frame.";
 		// Loop
 		cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+		m_timeOffset = m_curTime;
 		return false;
 	}
 	auto msTime = cap.get(cv::CAP_PROP_POS_MSEC);
@@ -469,8 +494,9 @@ bool mpw::MotionCaptureManager::UpdateFrame(std::string& outErr, mediapipe::Imag
 	auto mp_image_format = static_cast<mediapipe::ImageFormat::Format>(imageFormat);
 	input_frame_for_input->CopyPixelData(mp_image_format, width, height, data, mediapipe::ImageFrame::kDefaultAlignmentBoundary);
 
-	auto t = msTime *1000.f;
+	auto t = m_timeOffset +msTime *1000.f;
 	outFrameIndex = static_cast<size_t>(t);
+	m_curTime = outFrameIndex;
 
 	auto& img = *streamInputData.currentFrameImage;
 	img = { input_frame_for_input };
@@ -568,7 +594,7 @@ bool mpw::MotionCaptureManager::CreateFaceLandmarkerTask(::mediapipe::api2::buil
 	return true;
 }
 template <class TPayloadImg, class TPayloadTrackingIds>
-bool mpw::MotionCaptureManager::CreatePoseLandmarkerTask(::mediapipe::api2::builder::Graph& graph, TPayloadImg& imgInput, TPayloadTrackingIds& trackingIdsInput, std::string& outErr) {
+bool mpw::MotionCaptureManager::CreatePoseLandmarkerTask(::mediapipe::api2::builder::Graph& graph, TPayloadImg& imgInput, TPayloadTrackingIds& trackingIdsInput, const SmoothingFilterSettings& smoothingFilterSettings, std::string& outErr) {
 	auto& poseLandmarker = graph.AddNode(
 		"mediapipe.tasks.vision.pose_landmarker.PoseLandmarkerGraph");
 
@@ -586,14 +612,14 @@ bool mpw::MotionCaptureManager::CreatePoseLandmarkerTask(::mediapipe::api2::buil
 	if (IsOutputEnabled(Output::PoseWorldLandmarks)) {
 		auto outWorldLandmarks = poseLandmarker.Out("WORLD_LANDMARKS").SetName("pose_world_landmarks") >>
 			graph[::mediapipe::api2::Output< std::vector<mediapipe::LandmarkList>>("POSE_WORLD_LANDMARKS")];
-		CreateSmoothFilter(graph, outWorldLandmarks, trackingIdsInput, "filtered_pose_world_landmarks", "FILTERED_LANDMARKS");
+		CreateSmoothFilter(graph, outWorldLandmarks, trackingIdsInput, "filtered_pose_world_landmarks", "FILTERED_LANDMARKS", smoothingFilterSettings);
 	}
 
 
 	return true;
 }
 template <class TPayloadImg, class TPayloadTrackingIds>
-bool mpw::MotionCaptureManager::CreateHandLandmarkerTask(::mediapipe::api2::builder::Graph& graph, TPayloadImg& imgInput, TPayloadTrackingIds& trackingIdsInput, std::string& outErr) {
+bool mpw::MotionCaptureManager::CreateHandLandmarkerTask(::mediapipe::api2::builder::Graph& graph, TPayloadImg& imgInput, TPayloadTrackingIds& trackingIdsInput, const SmoothingFilterSettings& smoothingFilterSettings, std::string& outErr) {
 	auto& handLandmarker = graph.AddNode(
 		"mediapipe.tasks.vision.hand_landmarker.HandLandmarkerGraph");
 
@@ -608,7 +634,7 @@ bool mpw::MotionCaptureManager::CreateHandLandmarkerTask(::mediapipe::api2::buil
 	if (IsOutputEnabled(Output::HandWorldLandmarks)) {
 		auto outWorldLandmarks = handLandmarker.Out("WORLD_LANDMARKS").SetName("hand_world_landmarks") >>
 			graph[::mediapipe::api2::Output<std::vector<mediapipe::LandmarkList>>("HAND_WORLD_LANDMARKS")];
-		CreateSmoothFilter(graph, outWorldLandmarks, trackingIdsInput, "filtered_hand_world_landmarks", "FILTERED_HAND_LANDMARKS");
+		CreateSmoothFilter(graph, outWorldLandmarks, trackingIdsInput, "filtered_hand_world_landmarks", "FILTERED_HAND_LANDMARKS", smoothingFilterSettings);
 
 		handLandmarker.Out("HANDEDNESS").SetName("handedness") >>
 			graph[::mediapipe::api2::Output< std::vector<mediapipe::ClassificationList>>("HANDEDNESS")];
@@ -616,22 +642,21 @@ bool mpw::MotionCaptureManager::CreateHandLandmarkerTask(::mediapipe::api2::buil
 	return true;
 }
 template <class TPayloadWorldLandmarks, class TPayloadTrackingIds>
-void mpw::MotionCaptureManager::CreateSmoothFilter(::mediapipe::api2::builder::Graph& graph, TPayloadWorldLandmarks& worldLandmarks, TPayloadTrackingIds& trackingIdsInput, const char* outputName, const char* graphOutputName)
+void mpw::MotionCaptureManager::CreateSmoothFilter(::mediapipe::api2::builder::Graph& graph, TPayloadWorldLandmarks& worldLandmarks, TPayloadTrackingIds& trackingIdsInput, const char* outputName, const char* graphOutputName, const SmoothingFilterSettings& smoothingFilterSettings)
 {
 	// Smoothing
 	auto& smoothCalculator = graph.AddNode(
 		"MultiWorldLandmarksSmoothingCalculator");
 	auto* options = &smoothCalculator.GetOptions<mediapipe::LandmarksSmoothingCalculatorOptions>();
 
-	// Min cutoff 0.05 results into ~0.01 alpha in landmark EMA filter when
-	// landmark is static.
-	options->mutable_one_euro_filter()->set_min_cutoff(0.05f);
-	// Beta 80.0 in combintation with min_cutoff 0.05 results into ~0.94
-	// alpha in landmark EMA filter when landmark is moving fast.
-	options->mutable_one_euro_filter()->set_beta(80.0f);
-	// Derivative cutoff 1.0 results into ~0.17 alpha in landmark velocity
-	// EMA filter.
-	options->mutable_one_euro_filter()->set_derivate_cutoff(1.0f);
+	auto* filter = options->mutable_one_euro_filter();
+	filter->set_beta(smoothingFilterSettings.beta);
+	filter->set_disable_value_scaling(smoothingFilterSettings.disableValueScaling);
+	filter->set_frequency(smoothingFilterSettings.frequency);
+	filter->set_min_cutoff(smoothingFilterSettings.minCutoff);
+	filter->set_derivate_cutoff(smoothingFilterSettings.derivateCutoff);
+	filter->set_min_allowed_object_scale(smoothingFilterSettings.minAllowedObjectScale);
+
 	worldLandmarks >>
 		smoothCalculator.In("LANDMARKS");
 	trackingIdsInput >>
