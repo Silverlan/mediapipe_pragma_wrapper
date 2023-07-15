@@ -347,6 +347,7 @@ namespace mpw {
 
 		Output m_enabledOutputs;
 		std::unique_ptr< BaseInputData> m_inputData = nullptr;
+		std::chrono::steady_clock::time_point m_startTime; // Camera only
 		SourceType m_sourceType = SourceType::Image;
 		Source m_source;
 	};

@@ -426,6 +426,7 @@ void mpw::MotionCaptureManager::Stop()
 bool mpw::MotionCaptureManager::Start(std::string& outErr)
 {
 	cv::namedWindow("MediaPipe");
+	m_startTime = std::chrono::steady_clock::now();
 	return StartNextFrame(outErr);
 }
 
@@ -468,7 +469,14 @@ bool mpw::MotionCaptureManager::UpdateFrame(std::string& outErr, mediapipe::Imag
 		m_timeOffset = m_curTime;
 		return false;
 	}
-	auto msTime = cap.get(cv::CAP_PROP_POS_MSEC);
+	double msTime;
+	if (m_sourceType == SourceType::Camera)
+	{
+		auto dt = std::chrono::steady_clock::now() - m_startTime;
+		msTime = dt.count() / 1'000'000.0; // Convert to milliseconds
+	}
+	else
+		msTime = cap.get(cv::CAP_PROP_POS_MSEC);
 
 	//cv::rotate(frameBgr, frameBgr, cv::ROTATE_90_COUNTERCLOCKWISE);
 
